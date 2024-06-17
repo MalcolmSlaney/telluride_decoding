@@ -327,10 +327,12 @@ class Decoder(object):
       The normalized cross product (num_frames x num_features).
     """
     # From: https://en.wikipedia.org/wiki/Pearson_correlation_coefficient
+    self._power = np.asarray(self._power)  # Hack.. not sure why this is needed.
     assert np.sum(~np.isfinite(self._power)) == 0
     assert np.sum(self._power <= 0) == 0, f'ComputeCorrelation: Power is {self._power}, and count is {self._count}'
-    return ((x - np.broadcast_to(self._mean_x, x.shape)) *
-            (y - np.broadcast_to(self._mean_y, y.shape))/ self._power)
+    result = ((x - np.broadcast_to(self._mean_x, x.shape)) *
+              (y - np.broadcast_to(self._mean_y, y.shape))/ self._power)
+    return result
 
   def train(self,
             data0: tf.data.Dataset,

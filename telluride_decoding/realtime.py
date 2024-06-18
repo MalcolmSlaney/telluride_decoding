@@ -1,4 +1,6 @@
 import math
+import threading
+import time
 
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
@@ -50,27 +52,45 @@ class DataStream(object):
     self._buffer_time += new_data.shape[0]
 
   def get_data(self, frame_time: int, frame_count: int):
+    frame_count = min(frame_count, self._buffer_time-frame_time)
+    if frame_count <= 0:
+      return None
     if not self._buffer_count:
+      logging.warning('get_data warning: No data yet')
       return None
     if frame_time >= self._buffer_time:
+      logging.warning(f'get_data warning: Too far in the future ({frame_time})')
       return None  # Too far in the future
     if frame_time < self._buffer_time - self._buffer_count:
+      logging.warning(f'get_data warning: Too far in the past ({frame_time})')
       return None  # Too far in the past
 
-    buffer_start = frame_time % self._buffer_count
-    if buffer_start >= self._buffer_index:
-      buffer_end = min(self._buffer_count, self._buffer_index + frame_count)
-      first_part = self._data[buffer_start:buffer_end, :]
+    first_start = frame_time % self._buffer_count
+    if first_start >= self._buffer_index:
+      # Get the piece that is forward of the buffer index.
+      first_end = min(self._buffer_count, first_start + frame_count)
+      first_part = self._data[first_start:first_end, :]
+      assert first_part.shape[0], (f'{frame_time}, {self._buffer_count},' 
+                                   f'{self._buffer_index}, {first_start},'
+                                   f' {first_end}, {frame_count}')
       frame_count -= first_part.shape[0]
-      buffer_start = 0
+      first_start = 0
     else:
       first_part = None
 
+    second_start = first_start
     if frame_count > 0:
-      frame_count = min(frame_count, self._buffer_index)
-      second_part = self._data[buffer_start:frame_count, :]
+      # Now get the part that is at the start of the buffer, before the index
+      frame_count = min(frame_count, self._buffer_index-second_start)
+      second_part = self._data[int(second_start):int(second_start+frame_count), 
+                               :]
+
       if first_part is None:
+        assert second_part.shape[0], (f'{frame_time}, {self._buffer_count}' 
+                                      f'{self._buffer_index}, {second_start}, '
+                                      f'{frame_count}')
         return second_part
+      assert second_part.shape[0]
       return np.concatenate((first_part, second_part), axis=0)
     return first_part
   
@@ -86,14 +106,15 @@ class TimeStream(DataStream):
     if sample_rate <= 0:
       logging.error(f'Sample rate for {self._name} TimeStream can not '
                     f'be {sample_rate}')
-    self._sample_rate = float(sample_rate)
-    self._start_time = 0
-    self._end_time = 0
-    buffer_count = buffer_count or int(sample_rate)
+    self._sample_rate = float(sample_rate)   # Samples per second
+    self._start_time = 0                     # in Seconds
+    self._end_time = 0                       # in Seconds
+    buffer_count = int(buffer_count or sample_rate)
     super().__init__(buffer_count, dtype=dtype)
 
   def get_data_at_time(self, time: float, frame_count: int):
-    return super().get_data(math.floor(time*self._sample_rate), frame_count)
+    return super().get_data(int((time-self.start_time)*self._sample_rate), 
+                            frame_count)
 
   def add_data_at_time(self, data, timestamp):
     if self._start_time == 0:
@@ -108,7 +129,6 @@ class TimeStream(DataStream):
                       f'{delta_samples} samples gap.')
     self.add_data(data)
     self._end_time += data.shape[0]/self._sample_rate
-    # print(f'{self._name}: {self._start_time}, {self._end_time}, {data.shape}')
   
   @property
   def sample_rate(self):
@@ -116,17 +136,29 @@ class TimeStream(DataStream):
 
   @property
   def start_time(self):
+    """Returns last data time received in seconds."""
     return self._start_time
   
   @property
   def end_time(self):
+    """Returns first data time seen in seconds."""
     return self._end_time
 
 
 def end_stream_time(time_streams: List[TimeStream]):
   """Go through all the listed TimeStream objects and retrieve the latest time
   for which all streams have good data."""
-  return min([ts.end_time for ts in time_streams])
+  return min([ts.end_time for ts in time_streams if ts])
+
+
+def start_stream_time(time_streams: List[TimeStream]):
+  """Go through all the listed TimeStream objects and retrieve the last time
+  for which any streams has good data."""
+  times = [ts.start_time for ts in time_streams if ts]
+  print('Start times:', times)
+  if 0 in times:
+    return 0
+  return max(times)
 
 
 ##############  Python Lab Stream Layer #################################
@@ -189,13 +221,52 @@ def open_stream(name: str, debug: bool = False):
   return inlet
 
 @dataclass
-class BrainItems:
+class BrainItem:
   name: str
   lsl: pylsl.StreamInlet
-  stream: TimeStream
+  stream: Optional[TimeStream] = None
+  thread: Optional[threading.Thread] = None
+  lock:Optional[threading.Lock] = None
 
 
-all_stream_names = ['MyAudioStream', 'actiCHamp-18110006', 'NextSense']
+def read_stream_thread(brain_item: BrainItem):
+  print('Starting thread for stream', brain_item.name)
+  brain_item.lock = threading.Lock()
+
+  inlet = brain_item.lsl
+  ts = brain_item.stream
+  while True:
+    timestamp, data = read_from_inlet(inlet, timeout=0.01)
+    if not timestamp:
+      continue
+    # print(f'Read from {brain_item.name} inlet returned', data.shape, 'at', timestamp)
+    if 'Marker' in brain_item.name:
+      print(f'Marker found at {timestamp}: {data[0][0]}')
+    if ts:
+      with brain_item.lock:
+        endtime = ts.add_data_at_time(data, timestamp)
+
+
+all_stream_names = ['MyAudioStream', 'actiCHamp-18110006', 'NextSense', 
+                    'MarkerSTR_audio']
+
+
+def read_streamed_data(brain_items: List[BrainItem], start_time: float, 
+                       duration: float):
+  all_streams = [bi.stream for bi in brain_items.values() if bi.stream]
+  while end_stream_time(all_streams) < start_time + duration:
+    print('pausing..', end='')
+    time.sleep(.1)
+
+  results = []
+  for bi in brain_items.values():
+    stream = bi.stream
+    if stream:
+      frame_count = int(stream.sample_rate * duration)
+      with bi.lock:
+        data = stream.get_data_at_time(start_time, frame_count)
+        results.append(data)
+  return results
 
 
 def main():
@@ -205,7 +276,8 @@ def main():
   # iterate over found streams, creating specialized inlet objects that will
   # handle plotting the data
   for info in streams:
-    print(f'Type: {info.type()}, name: {info.name()}, sr={info.nominal_srate()}')
+    print(f'Type: {info.type()}, name: {info.name()}, '
+          f'sr={info.nominal_srate()}')
       # if info.type() == "Markers":
       #     if (
       #         info.nominal_srate() != pylsl.IRREGULAR_RATE
@@ -227,29 +299,43 @@ def main():
     inlet = open_stream(name)
     info = inlet.info()
     print(f'The {name} sample rate is {info.nominal_srate()}Hz')
-    ts = TimeStream(sample_rate=info.nominal_srate(), name=name)
-    all_streams[name] = BrainItems(name, inlet, ts)
+    if info.nominal_srate() > 0:
+      ts = TimeStream(sample_rate=info.nominal_srate(),
+                      buffer_count=4*info.nominal_srate(), 
+                      name=name)
+    else:
+      ts = 0
+    my_stream = BrainItem(name, inlet, ts)
+    thread = threading.Thread(target=read_stream_thread, args=[my_stream,],
+                              daemon=True)
+    my_stream.thread = thread
+    all_streams[name] = my_stream
+    thread.start()
 
-  for _ in range(10):
-    for brain_item in all_streams.values():
-      inlet = brain_item.lsl
-      ts = brain_item.stream
-      while True:
-        timestamp, data = read_from_inlet(inlet, timeout=0.01)
-        if not timestamp:
-          break
-        print(f'Read from {name} inlet returned', data.shape, 'at', timestamp)
-        endtime = ts.add_data_at_time(data, timestamp)
-        break
-    print('\n')
+  all_data_streams = [bi.stream for bi in all_streams.values() if bi.stream]
+  all_stream_objects = [bi.stream for bi in all_streams.values()]
+
+  start_time = 0
+  while start_time == 0:
+    start_time = start_stream_time(all_stream_objects)
+    time.sleep(1)
+
+  window_size = 0.1
+
+  for _ in range(300):
+    results = read_streamed_data(all_streams, start_time, .10)
+    # print(results)
+    print(start_time, [d.shape for d in results])
+    time.sleep(1)
+    start_time += 1
 
   for brain_item in all_streams.values():
-    ts = brain_item.stream
     print(f'TimeStream {brain_item.name}')
-    print(f'  Sample rate: {ts.sample_rate}')
-    print(f'  Total seconds recorded: {ts.end_time - ts.start_time}s')
+    ts = brain_item.stream
+    if ts:
+      print(f'  Sample rate: {ts.sample_rate}')
+      print(f'  Total seconds recorded: {ts.end_time - ts.start_time}s')
 
-  all_stream_objects = [bi.stream for bi in all_streams.values()]
   print('Latest stream time is', end_stream_time(all_stream_objects))
 
 if __name__ == '__main__':

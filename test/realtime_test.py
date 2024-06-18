@@ -14,6 +14,7 @@ class RealTimeTest(absltest.TestCase):
     np.testing.assert_equal(ds._data,
                             np.array([[0, 1], [2, 3], [4, 5], 
                                       [6, 7], [0, 0], [0, 0]]))
+    self.assertFalse(ds.get_data(4, 2))
 
     ds.add_data(b+8)
     np.testing.assert_equal(ds._data, 
@@ -23,7 +24,7 @@ class RealTimeTest(absltest.TestCase):
     d = ds.get_data(5, 4)
     np.testing.assert_equal(d, np.asarray([[10, 11], [12, 13], [14, 15]]))
 
-    self.assertFalse(ds.get_data(8, 4))
+    self.assertFalse(ds.get_data(16, 4))
 
     ground_truth = np.concatenate((b, b+8), axis=0)
     for i in range(2, 10):

@@ -97,7 +97,7 @@ class DataStream(object):
 
 class TimeStream(DataStream):
   """A refinement of DataStream, but this one keeps track of the sample rate
-  so you request new data by time.  (And when you insert new data, you also 
+  so you can request new data by time.  (And when you insert new data, you also 
   provide a time and it checks to make sure there aren't any gaps.)
   """
   def __init__(self, sample_rate: float, buffer_count: Optional[int] = None, 
@@ -222,6 +222,8 @@ def open_stream(name: str, debug: bool = False):
 
 @dataclass
 class BrainItem:
+  """A dataclass where we can keep the information to read data from LSL
+  and store it in a stream, along with the thread that does this work."""
   name: str
   lsl: pylsl.StreamInlet
   stream: Optional[TimeStream] = None
@@ -253,6 +255,17 @@ all_stream_names = ['MyAudioStream', 'actiCHamp-18110006', 'NextSense',
 
 def read_streamed_data(brain_items: List[BrainItem], start_time: float, 
                        duration: float):
+  """Read a window of data from all streams starting at the given time and for
+  the indicated duration (both in seconds).  Pause if not ready yet.
+  
+  Args:
+    brain_items: A list of BrainItem from which to read the already stored data
+    start_time: Time in seconds to start pulling data
+    duration: Time in seconds for how much data to pull.
+    
+  Returns:
+    A list of numpy arrays, one for each stream, of size num_frames x num_dims.
+  """
   all_streams = [bi.stream for bi in brain_items.values() if bi.stream]
   while end_stream_time(all_streams) < start_time + duration:
     print('pausing..', end='')

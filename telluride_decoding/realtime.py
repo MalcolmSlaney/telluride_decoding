@@ -14,9 +14,17 @@ import pylsl
 
 class DataStream(object):
   """A circular buffer for storing data that is coming in via a stream and for
-  which we want to access some amount of data from the past.
+  which we want to access some amount of data from the past.  This is contrast
+  to the buffers in real_time.py which grow to accomodate all the received
+  data.  These routines throw out the really old data as new data arrives.
   """
   def __init__(self, frame_count:int, dtype: type = float):
+    """Create the DataStream object.
+    Args:
+      frame_count: How many frames of data to store before throwing out the old
+        data. (The width of the data is specified when the buffer is created.) 
+      dtype: What type of data to store (int, float, etc.)
+    """
     self._data = None  # num_frames x num_dims
     self._frame_rate = None
     self._buffer_count = frame_count     # How big is the buffer?
@@ -35,7 +43,7 @@ class DataStream(object):
 
     assert new_data.shape[0] <= self._buffer_count
 
-    # How much space is left at the end
+    # How much space is left at the end, after the current index
     frames_to_end = self._buffer_count - self._buffer_index
     # Copy what we can
     end_buffer_count = min(new_data.shape[0], frames_to_end)

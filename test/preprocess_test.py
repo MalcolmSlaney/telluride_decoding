@@ -215,6 +215,27 @@ class PreprocessTest(parameterized.TestCase):
     np.testing.assert_array_less(np.abs(output_data[100:, -1]), 0.01)
     self.assertEqual(output_data.shape[1], 8)
 
+  def test_decimation(self):
+    """Test the decimation code.
+    """
+    data = np.reshape(np.arange(100), (-1, 1))
+    factor = 3  # How much to decimate input data by
+    p = preprocess.Preprocessor('decimation', fs_in=16, fs_out=16, 
+                                decimate=factor)
+    start_frame = 0
+    num_frames_to_process = 3
+    results = []
+    while start_frame < data.shape[0]:
+      results.append(p.process(data[start_frame:
+                                    start_frame+num_frames_to_process]))
+      start_frame += num_frames_to_process
+
+    results = np.concatenate(results, axis=0)
+    np.testing.assert_equal(results, 
+                            np.reshape(np.arange(0, data.shape[0], factor,
+                                                 dtype=float),
+                                       (-1, 1)))
+
   def test_processing_add_context(self):
     """Test case for adding context as we would in live data.
 
@@ -331,6 +352,68 @@ class PreprocessTest(parameterized.TestCase):
     self.assertEqual(spectrogram.shape[1], 251)
     self.assertEqual(np.argmax(spectrogram[:, 125]),
                      round(f0/(fs_in/(n_trans*segment_size))))
+
+  def test_all(self):
+    """A test which shows how to use this class to preprocess data."""
+    fs = 16
+    total_frames = 10*fs
+    num_dims = 2
+
+    f1 = 2
+    f2 = 3
+    f3 = 6
+    signals = np.zeros((total_frames, num_dims))
+    t = np.arange(total_frames)/fs
+
+    signals[:, 0] = np.sin(t*2*np.pi*f1)
+    signals[:, 1] = signals[:, 0] + np.sin(t*2*np.pi*f2) + np.sin(t*2*np.pi*f3)
+    
+    p =  preprocess.Preprocessor('test', fs_in=fs, fs_out=fs,
+                                 ref_channels=[[0,]], channels_to_ref=[[1,]],
+                                 lowpass_cutoff=3, lowpass_order=2,
+                                 )
+    
+    # p.process(signals)
+
+    frames_sent = 0
+    result_data = []
+    while frames_sent < total_frames:
+      num = min(3, total_frames - frames_sent)  # Process 3 frames at a time
+      result_data.append(p.process(signals[frames_sent: frames_sent+num, :]))
+      frames_sent += num
+
+    # Assemble all the results to compute the resulting spectrum for testing
+    results = np.concatenate(result_data, axis=0)
+
+    freqs = np.fft.fftfreq(total_frames)*fs
+    def find_freq(freqs, f):
+      return np.argmin((freqs-f)**2)
+    freq_resp = 20*np.log10(np.abs(np.fft.fft(results, axis=0)))
+    print(results.shape, freqs.shape, freq_resp.shape)
+    f2_index = find_freq(freqs, f2)
+    f3_index = find_freq(freqs, f3)
+    print(freqs[f2_index], freq_resp[f2_index, 1], 
+          freqs[f3_index], freq_resp[f3_index, 1])
+    with tf.io.gfile.GFile('/tmp/test_full_response.png', mode='w') as fp:
+      plt.clf()
+      plt.plot(results)
+      plt.savefig(fp)
+
+    with tf.io.gfile.GFile('/tmp/test_full_spectrum.png', mode='w') as fp:
+      plt.clf()
+      plt.semilogx(freqs[:total_frames//2], freq_resp[:total_frames//2, :])
+      # plt.ylim([-20, 0])
+      # plt.plot(highpass_cutoff, -3.02, 'x')
+      plt.xlabel('Frequency (Hz)')
+      plt.ylabel('Response (dB)')
+      plt.grid(True, which='both')
+      # plt.title('%gHz Highpass Filter Test' % highpass_cutoff)
+      plt.savefig(fp)
+
+    # Preprocessor(name={}, fs_in={}, fs_out={}, highpass_cutoff={}, ' +
+    #         'highpass_order={}, lowpass_cutoff={}, lowpass_order={}, ' +
+    #         'ref_channels={}, channels_to_ref={}, channel_numbers={} ' +
+    #         'data_mean={}, data_std={}, pre_context={}, post_context={})
 
 
 if __name__ == '__main__':

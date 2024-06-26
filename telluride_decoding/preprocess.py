@@ -73,6 +73,8 @@ class Preprocessor(object):
     channel_numbers: A list or string of channels to be retained.
     data_mean: A float containing the value to be used for demeaning.
     data_std: A float containing the value to be used for normalization.
+    decimate: An integer representing how much to decimate before adding
+      context,  Defaults to 1 (no decimation).
     pre_context: An integer specifying the pre-stimulus lags in samples.
     post_context: An integer specifying the post-stimulus lags in samples.
   """
@@ -91,13 +93,14 @@ class Preprocessor(object):
                channel_numbers=None,
                data_mean=0,
                data_std=1,
+               decimate=1,
                pre_context=0,
                post_context=0):
     """Specifies desired parameters up front.  Enter 0 or None to disable."""
     self.check_params(name, fs_in, fs_out, highpass_cutoff, highpass_order,
                       lowpass_cutoff, lowpass_order, ref_channels,
-                      channels_to_ref, channel_numbers, data_std, pre_context,
-                      post_context)
+                      channels_to_ref, channel_numbers, data_std, decimate, 
+                      pre_context, post_context)
     self._fs_in = fs_in
     if '(' in name:
       self.init_from_string(fs_in, name)
@@ -110,6 +113,8 @@ class Preprocessor(object):
     self.init_channel_numbers(channel_numbers)
     self._data_mean = data_mean
     self._data_std = data_std
+    self._decimate = decimate
+    self._start_decimation = 0
     self._pre_context = pre_context
     self._post_context = post_context
     self.context_reset()
@@ -230,6 +235,10 @@ class Preprocessor(object):
     return self._data_std
 
   @property
+  def decimate(self):
+    return self._decimate
+
+  @property
   def pre_context(self):
     return self._pre_context
 
@@ -241,16 +250,19 @@ class Preprocessor(object):
     return ('Preprocessor(name={}, fs_in={}, fs_out={}, highpass_cutoff={}, ' +
             'highpass_order={}, lowpass_cutoff={}, lowpass_order={}, ' +
             'ref_channels={}, channels_to_ref={}, channel_numbers={} ' +
-            'data_mean={}, data_std={}, pre_context={}, post_context={})'
+            'data_mean={}, data_std={}, decimate={}, pre_context={}, ' +
+            'post_context={})'
            ).format(self.name, self.fs_in, self.fs_out, self.highpass_cutoff,
                     self.highpass_order, self.highpass_cutoff,
                     self.highpass_order, self._ref_channels,
                     self.channels_to_ref, self.channel_numbers, self.data_mean,
-                    self.data_std, self.pre_context, self.post_context)
+                    self.data_std, self._decimate, 
+                    self.pre_context, self.post_context)
 
   def check_params(self, name, fs_in, fs_out, highpass_cutoff, highpass_order,
                    lowpass_cutoff, lowpass_order, ref_channels, channels_to_ref,
-                   channel_numbers, data_std, pre_context, post_context):
+                   channel_numbers, data_std, decimate, 
+                   pre_context, post_context):
     """Checks correctness of parameters passed as input."""
     if not isinstance(name, str):
       raise TypeError('name must be a string, not %s' % name)
@@ -275,6 +287,9 @@ class Preprocessor(object):
       raise ValueError('c    hannel_numbers must be a list.')
     if data_std <= 0:
       raise ValueError('data_std must be greater than 0.')
+    if decimate < 1 or not isinstance(decimate, int):
+      raise ValueError('decimate must be an integer >= 1, not '
+                       f'{decimate} of type {type(decimate)}')
     if pre_context < 0:
       raise ValueError('pre_context should not be less than 0.')
     if post_context < 0:
@@ -484,6 +499,14 @@ class Preprocessor(object):
                  shift_amt, :]
     return result
 
+  def decimate_data(self, data):
+    if self._decimate > 1:
+      d = data[self._start_decimation: : self._decimate]
+      self._start_decimation += data.shape[0]
+      self._start_decimation %= self._decimate
+      return d
+    return data
+
   def add_context(self, data):
     """Add pre and post temporal context to data.
 
@@ -544,6 +567,7 @@ class Preprocessor(object):
     data = self.reref_data(data)
     data = self.select_channels(data)
     data = self.normalize_data(data)
+    data = self.decimate_data(data)
     data = self.add_context(data)
     return data
 

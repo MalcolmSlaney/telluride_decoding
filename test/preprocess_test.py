@@ -265,8 +265,6 @@ class PreprocessTest(parameterized.TestCase):
       context_filled_data = p.add_context(input_data)
       self.assertEqual(context_filled_data.shape[1],
                        num_features * total_context)
-      print(input_data.shape)
-      print(context_filled_data.shape)
       c_out = np.concatenate([c_out, context_filled_data], axis=0)
     np.testing.assert_array_equal(c_out[pre_context, :],
                                   all_data[:total_context, :].flatten())
@@ -298,9 +296,7 @@ class PreprocessTest(parameterized.TestCase):
                  }
     param_list = ['{}={}'.format(k, param_dict[k]) for k in param_dict]
     name_string = '{}({})'.format(feature_name, ';'.join(param_list))
-    print('test_parsing Preprocessor(%s, %g)' % (name_string, fs_in))
     p = preprocess.Preprocessor(name_string, fs_in, fs_out)
-    print('test_parsing:', p)
     self.assertIn(feature_name, str(p))
     for k, v in param_dict.items():
       if k in ['channel_numbers', 'ref_channels', 'channels_to_ref']:
@@ -368,7 +364,10 @@ class PreprocessTest(parameterized.TestCase):
       self.assertEqual(getattr(p, f'_{k}'), params[k])
 
   def test_all(self):
-    """A test which shows how to use this class to preprocess data."""
+    """A test which shows how to use this class to preprocess data.
+    Load three signals: a ground (sine wave), a signal with two components,
+    and an impulse.  Then specify the reference channel (the ground) and lowpass
+    filter at 2Hz to see the response."""
     fs = 32
     total_frames = 100*fs
     num_dims = 3
@@ -390,9 +389,9 @@ class PreprocessTest(parameterized.TestCase):
     frames_sent = 0
     result_data = []
     while frames_sent < total_frames:
-      # Process 3 frames at a time, to make sure we don't have problems for
+      # Process 5 frames at a time, to make sure we don't have problems for
       # arbitrary block processing sizes.
-      num = min(3, total_frames - frames_sent) 
+      num = min(5, total_frames - frames_sent) 
       result = p.process(signals[frames_sent: frames_sent+num, :])
       result_data.append(result)
       frames_sent += num
@@ -419,7 +418,7 @@ class PreprocessTest(parameterized.TestCase):
 
     freq_resp = 20*np.log10(np.abs(np.fft.fft(results, axis=0)))
     freq_resp = freq_resp[:total_frames//2, :]    # Keep positive freqs only
-    # Normalize each frequency response
+    # Normalize the maximum of each channel's frequency response
     freq_resp -= np.max(freq_resp, axis=0)
       
     if False:
@@ -435,11 +434,13 @@ class PreprocessTest(parameterized.TestCase):
                 file=fp)
 
     with tf.io.gfile.GFile('/tmp/test_full_response.png', mode='w') as fp:
+      # Plot the preprocessor output, in the time domain
       plt.clf()
       plt.plot(results[:200, :])
       plt.savefig(fp)
 
     with tf.io.gfile.GFile('/tmp/test_full_spectrum.png', mode='w') as fp:
+      # Plot the frequency spectrum of each processed signal.
       plt.clf()
       plt.semilogx(freqs[:total_frames//2], freq_resp[:total_frames//2, :])
       plt.ylim([-80, 0])
@@ -448,10 +449,10 @@ class PreprocessTest(parameterized.TestCase):
       plt.ylabel('Response (dB)')
       plt.grid(True, which='both')
       plt.title(f'{f2}Hz Losspass Filter Test')
-      plt.legend(('Reference (Gnd)', 'Signal', 'Impulse Response'))
+      plt.legend(('Reference (Gnd)', 'Filtered Signal', 'Impulse Response'))
       plt.savefig(fp)
 
-    # Make sure that ground signal (at f1Hz) is there, an impulse at f1 bin
+    # Make sure that ground signal (at f1 Hz) is there, an impulse at f1 bin
     self.assertAlmostEqual(freq_resp[f1_index, 0], 0.00, 0.01)
     # Make sure rest of groound signal is zero (after zeroing out the f1 component)
     freq_resp[f1_index, 0] = -100
@@ -464,8 +465,8 @@ class PreprocessTest(parameterized.TestCase):
     freq_resp[f3_index, 1] = -100
     np.testing.assert_array_less(freq_resp[:, 1], -40)
 
-    # Make sure the filter's frequency response dies out as expected.
-    print('freq_resp size is', freq_resp.shape, f2_index)
+    # Make sure the filter's frequency response from the impulse dies out as 
+    # expected, 3dB at the filter's desired frequency, and then 12dB per octave.
     self.assertAlmostEqual(freq_resp[f2_index, 2], -3.01, places=2)
     # Expect 12dB per octave fall off.
     self.assertAlmostEqual(freq_resp[f3_index, 2], -12.46, places=2)
